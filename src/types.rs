@@ -4,6 +4,7 @@ use std::io::{self, ErrorKind};
 use std::string::ToString;
 
 use nom::IResult;
+use serde::{Deserialize, Serialize};
 
 use crate::parser as p;
 
@@ -27,7 +28,7 @@ impl<T> From<nom::Err<T>> for Error {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(PartialEq, Clone, Serialize, Deserialize)]
 pub enum Capability {
     Implementation(String),
     Sasl(Vec<String>),
@@ -39,6 +40,23 @@ pub enum Capability {
     Owner(String),
     Version(String),
     Unknown(String, Option<String>),
+}
+
+impl std::fmt::Debug for Capability {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Capability::Implementation(i) => write!(f, "Server: {}", i),
+            Capability::Sasl(m) => write!(f, "Authentication (Sasl): {:?}", m),
+            Capability::Sieve(e) => write!(f, "Extensions (Sieve): {:?}", e),
+            Capability::StartTls => write!(f, "Startls available"),
+            Capability::MaxRedirects(r) => write!(f, "Maximum number of redirects: {}", r),
+            Capability::Notify(n) => write!(f, "Notify: {:?}", n),
+            Capability::Language(l) => write!(f, "Language: {}", l),
+            Capability::Owner(o) => write!(f, "Owner: {}", o),
+            Capability::Version(v) => write!(f, "Version: {}", v),
+            Capability::Unknown(k, v) => write!(f, "Unkown: {}: '{:?}'", k, v),
+        }
+    }
 }
 
 impl TryFrom<(&str, Option<&str>)> for Capability {
@@ -71,7 +89,7 @@ impl TryFrom<(&str, Option<&str>)> for Capability {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub enum Command {
     Authenticate,
     StartTls,
@@ -212,7 +230,7 @@ impl std::fmt::Display for OkNoBye {
 
 pub type SieveUrl = String;
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
 pub enum QuotaVariant {
     None,
     MaxScripts,
@@ -222,7 +240,7 @@ pub enum QuotaVariant {
 type SieveString = String;
 type HumanReadableString = SieveString;
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum ResponseCode {
     AuthTooWeak,
     EncryptNeeded,
