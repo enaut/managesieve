@@ -1,6 +1,4 @@
-use std::convert::TryFrom;
-use std::fmt::Display;
-use std::io::{self, ErrorKind};
+use std::collections::{HashMap, VecDeque};
 use std::string::ToString;
 
 use nom::IResult;
@@ -14,6 +12,8 @@ pub enum Error {
     IncompleteResponse,
     #[error("invalid response")]
     InvalidResponse,
+    #[error("invalid response")]
+    MissingLine(Capability),
     #[error("invalid input")]
     InvalidInput,
 }
@@ -28,63 +28,122 @@ impl<T> From<nom::Err<T>> for Error {
     }
 }
 
-#[derive(PartialEq, Clone, Serialize, Deserialize)]
-pub enum Capability {
-    Implementation(String),
-    Sasl(Vec<String>),
-    Sieve(Vec<String>),
-    StartTls,
-    MaxRedirects(usize),
-    Notify(Vec<String>),
-    Language(String),
-    Owner(String),
-    Version(String),
-    Unknown(String, Option<String>),
+#[derive(PartialEq, Eq, Clone, Serialize, Deserialize, Debug, Default)]
+pub struct Capabilities {
+    pub implementation: String,
+    pub sasl: Vec<String>,
+    pub sieve: Vec<String>,
+    pub starttls: bool,
+    pub max_redirects: Option<usize>,
+    pub notify: Vec<String>,
+    pub language: Option<String>,
+    pub owner: Option<String>,
+    pub version: String,
 }
 
-impl std::fmt::Debug for Capability {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Capability::Implementation(i) => write!(f, "Server: {}", i),
-            Capability::Sasl(m) => write!(f, "Authentication (Sasl): {:?}", m),
-            Capability::Sieve(e) => write!(f, "Extensions (Sieve): {:?}", e),
-            Capability::StartTls => write!(f, "Startls available"),
-            Capability::MaxRedirects(r) => write!(f, "Maximum number of redirects: {}", r),
-            Capability::Notify(n) => write!(f, "Notify: {:?}", n),
-            Capability::Language(l) => write!(f, "Language: {}", l),
-            Capability::Owner(o) => write!(f, "Owner: {}", o),
-            Capability::Version(v) => write!(f, "Version: {}", v),
-            Capability::Unknown(k, v) => write!(f, "Unkown: {}: '{:?}'", k, v),
+impl Capabilities {
+    pub fn new(implementation: String, version: String, sieve: Vec<String>) -> Self {
+        Self {
+            implementation,
+            version,
+            sieve,
+            starttls: false,
+            ..Default::default()
         }
     }
 }
 
-impl TryFrom<(&str, Option<&str>)> for Capability {
-    type Error = io::Error;
+impl TryFrom<HashMap<Capability, Vec<String>>> for Capabilities {
+    type Error = Error;
+    fn try_from(mut value: HashMap<Capability, Vec<String>>) -> Result<Self, Self::Error> {
+        if let Some(parsed) = value.get(&Capability::Unknown) {
+            println!("Unknown capability: {:?}", parsed);
+        }
 
-    fn try_from(s: (&str, Option<&str>)) -> Result<Self, Self::Error> {
+        let caps = Capabilities {
+            implementation: value
+                .remove(&Capability::Implementation)
+                .ok_or(Error::MissingLine(Capability::Implementation))?
+                .join(" "),
+            sasl: value.remove(&Capability::Sasl).unwrap_or_default(),
+            sieve: value
+                .remove(&Capability::Sieve)
+                .ok_or(Error::MissingLine(Capability::Sieve))?,
+            starttls: value.remove(&Capability::StartTls).is_some(),
+            max_redirects: VecDeque::from(
+                value
+                    .remove(&Capability::MaxRedirects)
+                    .ok_or(Error::MissingLine(Capability::MaxRedirects))?,
+            )
+            .pop_front()
+            .and_then(|e| {
+                let u: Option<usize> = e.parse().ok();
+                u
+            }),
+            notify: value.remove(&Capability::Notify).unwrap_or_default(),
+            language: value.remove(&Capability::Language).map(|v| v.join(" ")),
+            owner: value.remove(&Capability::Owner).map(|v| v.join(" ")),
+            version: VecDeque::from(
+                value
+                    .remove(&Capability::Version)
+                    .ok_or(Error::MissingLine(Capability::Version))?,
+            )
+            .pop_front()
+            .ok_or(Error::MissingLine(Capability::Version))?,
+        };
+        Ok(caps)
+    }
+}
+
+#[derive(PartialEq, Hash, Eq, Clone, Debug, Serialize, Deserialize)]
+pub enum Capability {
+    Implementation,
+    Sasl,
+    Sieve,
+    StartTls,
+    MaxRedirects,
+    Notify,
+    Language,
+    Owner,
+    Version,
+    Unknown,
+}
+
+#[derive(PartialEq, Eq, Clone, Debug, Serialize, Deserialize)]
+pub enum CapabilityValue {
+    NoValue,
+    Single(String),
+    Number(usize),
+    Multi(Vec<String>),
+    Unkown { name: String, value: Option<String> },
+}
+
+impl<'a> Capability {
+    fn try_from(s: (&'a str, Option<&'a str>)) -> Result<(Capability, Vec<String>), Error> {
         let (cap, rest) = s;
 
-        let err = || io::Error::new(ErrorKind::InvalidInput, "Invalid Capability");
-        let unwrap_rest = || rest.map(|o| o.to_owned()).ok_or_else(err);
+        let err = || Error::InvalidInput;
         let unwrap_rest_vec = || {
             rest.map(|r| r.split(' ').map(|x| x.to_string()).collect())
                 .ok_or_else(err)
         };
 
         Ok(match cap {
-            "IMPLEMENTATION" => Capability::Implementation(unwrap_rest()?),
-            "SASL" => Capability::Sasl(unwrap_rest_vec()?),
-            "SIEVE" => Capability::Sieve(unwrap_rest_vec()?),
-            "STARTTLS" => Capability::StartTls,
-            "MAXREDIRECTS" => {
-                Capability::MaxRedirects(unwrap_rest()?.parse::<usize>().map_err(|_| err())?)
+            "IMPLEMENTATION" => (Capability::Implementation, unwrap_rest_vec()?),
+            "SASL" => (Capability::Sasl, unwrap_rest_vec()?),
+            "SIEVE" => (Capability::Sieve, unwrap_rest_vec()?),
+            "STARTTLS" => (Capability::StartTls, vec![]),
+            "MAXREDIRECTS" => (Capability::MaxRedirects, unwrap_rest_vec()?),
+            "NOTIFY" => (Capability::Notify, unwrap_rest_vec()?),
+            "LANGUAGE" => (Capability::Owner, unwrap_rest_vec()?),
+            "OWNER" => (Capability::Owner, unwrap_rest_vec()?),
+            "VERSION" => (Capability::Version, unwrap_rest_vec()?),
+            cap => {
+                let mut rest = unwrap_rest_vec()?;
+                let mut list = vec![cap.to_owned()];
+                list.append(&mut rest);
+                (Capability::Unknown, list)
             }
-            "NOTIFY" => Capability::Notify(unwrap_rest_vec()?),
-            "LANGUAGE" => Capability::Owner(unwrap_rest()?),
-            "OWNER" => Capability::Owner(unwrap_rest()?),
-            "VERSION" => Capability::Version(unwrap_rest()?),
-            cap => Capability::Unknown(cap.to_owned(), rest.map(|s| s.to_owned())),
         })
     }
 }
@@ -319,17 +378,20 @@ pub fn response_checkscript(input: &str) -> Result<(&str, Response), Error> {
 
 /// Parses text returned from the server in response to the CAPABILITY command.
 /// Returns list of capabilities and optional additional strings.
-pub fn response_capability(input: &str) -> Result<(&str, Vec<Capability>, Response), Error> {
-    match p::response_capability(input) {
+pub fn response_capability(input: &str) -> Result<(&str, Capabilities, Response), Error> {
+    let tokens = p::response_capability(input);
+    match tokens {
         Ok((left, (s, resp))) => {
-            let caps = s
+            let caps: HashMap<Capability, Vec<String>> = s
                 .iter()
                 .map(|(cap, rest)| Capability::try_from((&**cap, rest.as_deref())).unwrap())
                 .collect();
+
+            let caps = Capabilities::try_from(caps)?;
             Ok((left, caps, resp))
         }
         Err(nom::Err::Incomplete(_)) => Err(Error::IncompleteResponse),
-        _ => Err(Error::InvalidResponse),
+        Err(e) => panic!("{:#?}", e),
     }
 }
 
@@ -340,13 +402,14 @@ pub fn response_havespace(input: &str) -> Result<(&str, Response), Error> {
 
 /// Parses text returned from the server in response to the STARTTLS command.
 /// Returns list of capabilities and optional additional strings.
-pub fn response_starttls(input: &str) -> Result<(&str, Vec<Capability>, Response), Error> {
+pub fn response_starttls(input: &str) -> Result<(&str, Capabilities, Response), Error> {
     match p::response_starttls(input) {
         Ok((left, (s, resp))) => {
-            let caps = s
+            let caps: HashMap<Capability, Vec<String>> = s
                 .iter()
                 .map(|(cap, rest)| Capability::try_from((&**cap, rest.as_deref())).unwrap())
                 .collect();
+            let caps = Capabilities::try_from(caps)?;
             Ok((left, caps, resp))
         }
         Err(nom::Err::Incomplete(_)) => Err(Error::IncompleteResponse),
@@ -380,3 +443,14 @@ pub fn response_unauthenticate(input: &str) -> Result<(&str, Response), Error> {
 
 pub type MSResult<'a, T> = IResult<&'a str, (T, Response)>;
 pub type MSResultList<'a, T> = IResult<&'a str, (Vec<T>, Response)>;
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_response_capability() {
+        let input = include_str!("test_input/response_capability-1.txt");
+        let caps = response_capability(input).unwrap();
+        assert!(caps.1.implementation.contains("ManageSieve"))
+    }
+}

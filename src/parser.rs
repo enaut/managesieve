@@ -367,12 +367,23 @@ pub fn response_capability(
 #[test]
 fn test_response_capability() {
     response_capability("\"CAPABILITY1\"\r\n\"CAPABILITY2\"\r\nOK\r\n").unwrap();
+    let input = "\"CAPABILITY1\"\r\n\"CAPABILITY2\"\r\nOK \"TEST\"\r\n";
+    response_capability(input).unwrap();
 }
-
 #[test]
 fn test_response_capability_2() {
     let inc1 = include_str!("test_input/response_capability-1.txt");
-    response_capability(inc1).unwrap();
+    dbg!(inc1);
+    let caps = response_capability(inc1).unwrap();
+    assert!(caps
+        .1
+         .0
+        .first()
+        .unwrap()
+        .1
+        .as_ref()
+        .unwrap()
+        .contains("ManageSieve"));
 }
 
 pub fn response_starttls(input: &str) -> MSResultList<(String, Option<String>)> {
